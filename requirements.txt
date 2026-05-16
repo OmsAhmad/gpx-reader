@@ -1,3 +1,0 @@
-gpxpy>=1.6.2
-timezonefinder>=6.5.9
-pytz>=2020.1
