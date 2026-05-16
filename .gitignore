@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+*.gpx
+*.html
+!GPX Viewer.html
+.DS_Store
