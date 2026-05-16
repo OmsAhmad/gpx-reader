@@ -2,6 +2,8 @@
 
 Interactive GPX file viewer with a topo map and synced elevation profile.
 
+![GPX Viewer screenshot](screenshot.png)
+
 ## Usage
 
 1. Open `GPX Viewer.html` in your browser
