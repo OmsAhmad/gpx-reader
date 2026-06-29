@@ -18,7 +18,28 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 #profile-container { position: relative; width: 100%; height: 160px; background: #16213e; padding: 8px 16px 20px 16px; flex-shrink: 0; }
 #profile { width: 100%; height: 100%; cursor: crosshair; }
 #tooltip { position: absolute; display: none; background: rgba(0,0,0,0.85); color: #fff; padding: 8px 12px; border-radius: 6px; font-size: 13px; pointer-events: none; white-space: nowrap; z-index: 1000; }
-#selection-info { position: absolute; top: 8px; right: 16px; background: rgba(0,0,0,0.8); color: #0ff; padding: 8px 14px; border-radius: 6px; font-size: 13px; display: none; z-index: 1000; }
+#selection-info { position: absolute; top: 8px; right: 16px; background: rgba(0,0,0,0.8); color: #0ff; padding: 6px 8px 6px 14px; border-radius: 6px; font-size: 13px; display: none; align-items: center; gap: 10px; z-index: 1000; }
+#make-segment-btn { background: #0ff; color: #003344; border: none; border-radius: 4px; padding: 4px 10px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+#make-segment-btn:hover { background: #5ff; }
+#segments-panel {
+    position: fixed; top: 12px; right: 12px; width: 200px;
+    max-height: 45vh; overflow-y: auto;
+    flex-direction: column; gap: 8px;
+    display: none; z-index: 1100;
+}
+#segments-header { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: #7a8aa0; padding: 0 2px; }
+.segment-card {
+    background: rgba(13, 27, 42, 0.95); border: 1px solid #2a3a4a;
+    border-radius: 8px; padding: 8px 8px 8px 10px;
+    display: flex; align-items: center; gap: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+}
+.seg-color { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
+.seg-stats { flex: 1; min-width: 0; }
+.seg-main { font-size: 14px; font-weight: 600; color: #fff; }
+.seg-sub { font-size: 12px; color: #9ab; margin-top: 1px; }
+.seg-close { background: none; border: none; color: #889; font-size: 18px; line-height: 1; cursor: pointer; padding: 0 2px; flex-shrink: 0; }
+.seg-close:hover { color: #ff6b6b; }
 #drop-overlay {
     position: fixed; top: 0; left: 0; width: 100%; height: 100%;
     background: rgba(0, 255, 255, 0.08); border: 4px dashed #0ff;
@@ -48,7 +69,13 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-
 <div id="profile-container">
     <canvas id="profile"></canvas>
     <div id="tooltip"></div>
-    <div id="selection-info"></div>
+    <div id="selection-info">
+        <span id="selection-text"></span>
+        <button id="make-segment-btn">+ Segment</button>
+    </div>
+</div>
+<div id="segments-panel">
+    <div id="segments-header">Segments</div>
 </div>
 
 <script>
@@ -70,11 +97,19 @@ const ctx = canvas.getContext('2d');
 const container = document.getElementById('profile-container');
 const tooltip = document.getElementById('tooltip');
 const selInfo = document.getElementById('selection-info');
+const selText = document.getElementById('selection-text');
+const makeSegmentBtn = document.getElementById('make-segment-btn');
+const segmentsPanel = document.getElementById('segments-panel');
 const emptyState = document.getElementById('empty-state');
 
 let dpr, plotLeft, plotTop, plotWidth, plotHeight;
 let minEle, maxEle, maxDist;
 let selecting = false, selStart = null, selEnd = null;
+let selI1 = null, selI2 = null;
+let segments = [];
+let segmentColorIdx = 0;
+let editing = null; // { seg, side: 'left'|'right' } while dragging a segment edge
+const SEGMENT_COLORS = ['#ffd166', '#06d6a0', '#a78bfa', '#4cc9f0', '#f72585', '#ff9f1c', '#80ed99', '#ff6bd6'];
 
 function setup() {
     dpr = window.devicePixelRatio || 1;
@@ -144,6 +179,37 @@ function draw() {
     ctx.strokeStyle = '#ff6b6b';
     ctx.lineWidth = 2;
     ctx.stroke();
+
+    drawSegmentBands();
+    drawSegmentEdges();
+}
+
+function withAlpha(hex, a) {
+    let h = hex.replace('#', '');
+    if (h.length === 3) h = h.split('').map(c => c + c).join('');
+    const r = parseInt(h.slice(0, 2), 16), g = parseInt(h.slice(2, 4), 16), b = parseInt(h.slice(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${a})`;
+}
+
+function drawSegmentBands() {
+    for (const seg of segments) {
+        const lx = xForDist(DATA[seg.i1].dist);
+        const rx = xForDist(DATA[seg.i2].dist);
+        ctx.fillStyle = withAlpha(seg.color, 0.14);
+        ctx.fillRect(lx, plotTop, rx - lx, plotHeight);
+    }
+}
+
+function drawSegmentEdges() {
+    for (const seg of segments) {
+        for (const x of [xForDist(DATA[seg.i1].dist), xForDist(DATA[seg.i2].dist)]) {
+            ctx.strokeStyle = withAlpha(seg.color, 0.85);
+            ctx.lineWidth = 1.5;
+            ctx.beginPath(); ctx.moveTo(x, plotTop); ctx.lineTo(x, plotTop + plotHeight); ctx.stroke();
+            ctx.fillStyle = seg.color;
+            ctx.fillRect(x - 3, plotTop - 5, 6, 7); // grip at the top of the line
+        }
+    }
 }
 
 function findClosestIndex(dist) {
@@ -170,7 +236,9 @@ function getCanvasX(e) {
 
 canvas.addEventListener('mousemove', (e) => {
     if (!DATA || DATA.length === 0) return;
+    if (editing) return; // edge drag is handled at document level
     const x = getCanvasX(e);
+    if (!selecting) canvas.style.cursor = handleAt(x) ? 'ew-resize' : 'crosshair';
     const dist = distForX(x);
     if (dist < 0 || dist > maxDist) { tooltip.style.display = 'none'; return; }
 
@@ -222,65 +290,202 @@ function drawCrosshair(x, idx) {
 
 canvas.addEventListener('mousedown', (e) => {
     if (!DATA || DATA.length === 0) return;
+    const x = getCanvasX(e);
+    const h = handleAt(x);
+    if (h) {
+        // Grab a saved segment's edge instead of starting a new selection
+        editing = h;
+        document.body.style.cursor = 'ew-resize';
+        e.preventDefault();
+        return;
+    }
     selecting = true;
-    selStart = getCanvasX(e);
+    selStart = x;
     selEnd = selStart;
+    selI1 = null; selI2 = null;
     highlightLine.setLatLngs([]);
     selInfo.style.display = 'none';
 });
 
 canvas.addEventListener('mouseup', () => {
+    if (editing) return;
     if (selecting && selStart !== null && selEnd !== null && Math.abs(selEnd - selStart) > 5) {
         updateSelection();
     } else {
-        selStart = null;
-        selEnd = null;
-        highlightLine.setLatLngs([]);
-        selInfo.style.display = 'none';
-        draw();
+        clearSelection();
     }
     selecting = false;
 });
 
 canvas.addEventListener('mouseleave', () => {
-    if (!selecting) {
+    if (!selecting && !editing) {
+        // Keep any active selection (highlight + info) when the cursor moves
+        // off the profile; only drop the transient hover crosshair/marker.
         tooltip.style.display = 'none';
         marker.remove();
-        selStart = null; selEnd = null;
-        highlightLine.setLatLngs([]);
-        selInfo.style.display = 'none';
         draw();
     }
 });
+
+// Dragging a saved segment's left/right edge on the profile
+document.addEventListener('mousemove', (e) => {
+    if (!editing) return;
+    setSegmentEdge(editing.seg, editing.side, getCanvasX(e));
+});
+
+document.addEventListener('mouseup', () => {
+    if (editing) { editing = null; document.body.style.cursor = ''; }
+});
+
+const toMi = m => (m / 1000 * 0.621371).toFixed(2);
+const toFt = m => Math.round(m * 3.28084);
+
+function formatDuration(ms) {
+    const total = Math.max(0, Math.round(ms / 1000));
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    return `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
+function segStats(i1, i2) {
+    const distM = DATA[i2].dist - DATA[i1].dist;
+    const eleChangeM = DATA[i2].ele - DATA[i1].ele;
+    let gainM = 0, lossM = 0;
+    for (let i = i1 + 1; i <= i2; i++) {
+        const diff = DATA[i].ele - DATA[i - 1].ele;
+        if (diff > 0) gainM += diff; else lossM += diff;
+    }
+    const elapsedMs = (DATA[i1].t != null && DATA[i2].t != null) ? (DATA[i2].t - DATA[i1].t) : null;
+    return { distM, eleChangeM, gainM, lossM, elapsedMs };
+}
 
 function updateSelection() {
     if (selStart === null || selEnd === null) return;
     const x1 = Math.min(selStart, selEnd);
     const x2 = Math.max(selStart, selEnd);
-    const d1 = distForX(x1);
-    const d2 = distForX(x2);
-    const i1 = findClosestIndex(d1);
-    const i2 = findClosestIndex(d2);
-
+    const i1 = findClosestIndex(distForX(x1));
+    const i2 = findClosestIndex(distForX(x2));
     if (i1 === i2) return;
+    selI1 = i1; selI2 = i2;
 
-    const segDist = DATA[i2].dist - DATA[i1].dist;
-    const eleChange = DATA[i2].ele - DATA[i1].ele;
-    let eleGain = 0, eleLoss = 0;
-    for (let i = i1 + 1; i <= i2; i++) {
-        const diff = DATA[i].ele - DATA[i - 1].ele;
-        if (diff > 0) eleGain += diff;
-        else eleLoss += diff;
-    }
-
-    selInfo.innerHTML = `Distance: <b>${(segDist/1000 * 0.621371).toFixed(2)} mi</b> | ` +
-        `Elevation: <b>${eleChange >= 0 ? '+' : ''}${(eleChange * 3.28084).toFixed(0)} ft</b> | ` +
-        `Gain: <b>+${(eleGain * 3.28084).toFixed(0)} ft</b> | Loss: <b>${(eleLoss * 3.28084).toFixed(0)} ft</b>`;
-    selInfo.style.display = 'block';
+    const s = segStats(i1, i2);
+    let html = `Distance: <b>${toMi(s.distM)} mi</b> | ` +
+        `Elevation: <b>${s.eleChangeM >= 0 ? '+' : ''}${toFt(s.eleChangeM)} ft</b> | ` +
+        `Gain: <b>+${toFt(s.gainM)} ft</b> | Loss: <b>${toFt(s.lossM)} ft</b>`;
+    if (s.elapsedMs != null) html += ` | Time: <b>${formatDuration(s.elapsedMs)}</b>`;
+    selText.innerHTML = html;
+    selInfo.style.display = 'flex';
 
     const segLatLngs = DATA.slice(i1, i2 + 1).map(d => [d.lat, d.lon]);
     highlightLine.setLatLngs(segLatLngs);
 }
+
+function clearSelection() {
+    selStart = null; selEnd = null;
+    selI1 = null; selI2 = null;
+    highlightLine.setLatLngs([]);
+    selInfo.style.display = 'none';
+    draw();
+}
+
+function makeSegment(i1, i2) {
+    const color = SEGMENT_COLORS[segmentColorIdx % SEGMENT_COLORS.length];
+    segmentColorIdx++;
+
+    const line = L.polyline([], { color, weight: 5, opacity: 0.95 }).addTo(map);
+    const seg = { i1, i2, color, line, el: null, mainEl: null, subEl: null };
+
+    const card = document.createElement('div');
+    card.className = 'segment-card';
+
+    const swatch = document.createElement('span');
+    swatch.className = 'seg-color';
+    swatch.style.background = color;
+
+    const stats = document.createElement('div');
+    stats.className = 'seg-stats';
+    const mainEl = document.createElement('div');
+    mainEl.className = 'seg-main';
+    const subEl = document.createElement('div');
+    subEl.className = 'seg-sub';
+    stats.appendChild(mainEl);
+    stats.appendChild(subEl);
+
+    const close = document.createElement('button');
+    close.className = 'seg-close';
+    close.innerHTML = '&times;';
+    close.title = 'Remove segment';
+    close.addEventListener('click', () => removeSegment(seg));
+
+    card.appendChild(swatch);
+    card.appendChild(stats);
+    card.appendChild(close);
+    seg.el = card;
+    seg.mainEl = mainEl;
+    seg.subEl = subEl;
+    segmentsPanel.appendChild(card);
+    segments.push(seg);
+    segmentsPanel.style.display = 'flex';
+
+    updateSegmentGeometry(seg);
+    clearSelection();
+}
+
+// Sync a segment's map polyline and card stats to its current i1/i2
+function updateSegmentGeometry(seg) {
+    seg.line.setLatLngs(DATA.slice(seg.i1, seg.i2 + 1).map(d => [d.lat, d.lon]));
+    const s = segStats(seg.i1, seg.i2);
+    seg.mainEl.textContent = `${toMi(s.distM)} mi`;
+    let sub = `+${toFt(s.gainM)} ft`;
+    if (s.elapsedMs != null) sub += ` · ${formatDuration(s.elapsedMs)}`;
+    seg.subEl.textContent = sub;
+}
+
+// Nearest segment edge within a few px of canvas x, or null
+function handleAt(x) {
+    const TH = 6;
+    let best = null, bestDist = TH + 1;
+    for (const seg of segments) {
+        const lx = xForDist(DATA[seg.i1].dist);
+        const rx = xForDist(DATA[seg.i2].dist);
+        if (Math.abs(x - lx) < bestDist) { bestDist = Math.abs(x - lx); best = { seg, side: 'left' }; }
+        if (Math.abs(x - rx) < bestDist) { bestDist = Math.abs(x - rx); best = { seg, side: 'right' }; }
+    }
+    return best;
+}
+
+function setSegmentEdge(seg, side, x) {
+    const idx = findClosestIndex(Math.max(0, Math.min(maxDist, distForX(x))));
+    if (side === 'left') {
+        seg.i1 = Math.max(0, Math.min(idx, seg.i2 - 1));
+    } else {
+        seg.i2 = Math.min(DATA.length - 1, Math.max(idx, seg.i1 + 1));
+    }
+    updateSegmentGeometry(seg);
+    draw();
+}
+
+function removeSegment(seg) {
+    map.removeLayer(seg.line);
+    seg.el.remove();
+    const idx = segments.indexOf(seg);
+    if (idx >= 0) segments.splice(idx, 1);
+    if (segments.length === 0) segmentsPanel.style.display = 'none';
+    draw();
+}
+
+function clearAllSegments() {
+    segments.forEach(seg => { map.removeLayer(seg.line); seg.el.remove(); });
+    segments = [];
+    segmentColorIdx = 0;
+    segmentsPanel.style.display = 'none';
+}
+
+makeSegmentBtn.addEventListener('click', () => {
+    if (selI1 === null || selI2 === null) return;
+    makeSegment(selI1, selI2);
+});
 
 // --- GPX Parsing (client-side) ---
 
@@ -356,13 +561,7 @@ function parseGPXClient(xmlStr) {
         let timeStr = '', elapsedStr = '';
         if (pt.time) {
             timeStr = pt.time.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-            if (startTime) {
-                const elapsed = (pt.time - startTime) / 1000;
-                const h = Math.floor(elapsed / 3600);
-                const m = Math.floor((elapsed % 3600) / 60);
-                const s = Math.floor(elapsed % 60);
-                elapsedStr = `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-            }
+            if (startTime) elapsedStr = formatDuration(pt.time - startTime);
         }
 
         data.push({
@@ -371,6 +570,7 @@ function parseGPXClient(xmlStr) {
             dist: Math.round(cumDist * 10) / 10,
             time: timeStr,
             elapsed: elapsedStr,
+            t: pt.time ? pt.time.getTime() : null,
         });
     }
 
@@ -383,8 +583,10 @@ function loadGPXData(data, tzLabel) {
     emptyState.style.display = 'none';
 
     selStart = null; selEnd = null;
+    selI1 = null; selI2 = null;
     selInfo.style.display = 'none';
     tooltip.style.display = 'none';
+    clearAllSegments();
 
     const latlngs = DATA.map(d => [d.lat, d.lon]);
     routeLine.setLatLngs(latlngs);
